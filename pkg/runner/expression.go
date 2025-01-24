@@ -108,6 +108,19 @@ var hashfiles string
 
 // NewStepExpressionEvaluator creates a new evaluator
 func (rc *RunContext) NewStepExpressionEvaluator(ctx context.Context, step step) ExpressionEvaluator {
+	return rc.NewStepExpressionEvaluatorExt(ctx, step, false)
+}
+
+// NewStepExpressionEvaluatorExt creates a new evaluator
+func (rc *RunContext) NewStepExpressionEvaluatorExt(ctx context.Context, step step, rcInputs bool) ExpressionEvaluator {
+	ghc := rc.getGithubContext(ctx)
+	if rcInputs {
+		return rc.newStepExpressionEvaluator(ctx, step, ghc, getEvaluatorInputs(ctx, rc, nil, ghc))
+	}
+	return rc.newStepExpressionEvaluator(ctx, step, ghc, getEvaluatorInputs(ctx, rc, step, ghc))
+}
+
+func (rc *RunContext) newStepExpressionEvaluator(ctx context.Context, step step, _ *model.GithubContext, inputs map[string]interface{}) ExpressionEvaluator {
 	// todo: cleanup EvaluationEnvironment creation
 	job := rc.Run.Job()
 	strategy := make(map[string]interface{})
@@ -126,9 +139,6 @@ func (rc *RunContext) NewStepExpressionEvaluator(ctx context.Context, step step)
 			Result:  jobs[needs].Result,
 		}
 	}
-
-	ghc := rc.getGithubContext(ctx)
-	inputs := getEvaluatorInputs(ctx, rc, step, ghc)
 
 	ee := &exprparser.EvaluationEnvironment{
 		Github:   step.getGithubContext(ctx),
@@ -196,7 +206,7 @@ func getHashFilesFunction(ctx context.Context, rc *RunContext) func(v []reflect.
 				Mode: 0o644,
 				Body: hashfiles,
 			}).
-				Then(rc.execJobContainer([]string{"node", path.Join(rc.JobContainer.GetActPath(), name)},
+				Then(rc.execJobContainer([]string{rc.GetNodeToolFullPath(ctx), path.Join(rc.JobContainer.GetActPath(), name)},
 					env, "", "")).
 				Finally(func(context.Context) error {
 					rc.JobContainer.ReplaceLogWriter(stdout, stderr)
@@ -403,7 +413,6 @@ func escapeFormatString(in string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(in, "{", "{{"), "}", "}}")
 }
 
-//nolint:gocyclo
 func rewriteSubExpression(ctx context.Context, in string, forceFormat bool) (string, error) {
 	if !strings.Contains(in, "${{") || !strings.Contains(in, "}}") {
 		return in, nil
@@ -470,7 +479,6 @@ func rewriteSubExpression(ctx context.Context, in string, forceFormat bool) (str
 	return out, nil
 }
 
-//nolint:gocyclo
 func getEvaluatorInputs(ctx context.Context, rc *RunContext, step step, ghc *model.GithubContext) map[string]interface{} {
 	inputs := map[string]interface{}{}
 
@@ -489,7 +497,7 @@ func getEvaluatorInputs(ctx context.Context, rc *RunContext, step step, ghc *mod
 		}
 	}
 
-	if ghc.EventName == "workflow_dispatch" {
+	if rc.caller == nil && ghc.EventName == "workflow_dispatch" {
 		config := rc.Run.Workflow.WorkflowDispatchConfig()
 		if config != nil && config.Inputs != nil {
 			for k, v := range config.Inputs {
@@ -512,7 +520,9 @@ func getEvaluatorInputs(ctx context.Context, rc *RunContext, step step, ghc *mod
 			for k, v := range config.Inputs {
 				value := nestedMapLookup(ghc.Event, "inputs", k)
 				if value == nil {
-					v.Default.Decode(&value)
+					if err := v.Default.Decode(&value); err != nil {
+						common.Logger(ctx).Debugf("error decoding default value for %s: %v", k, err)
+					}
 				}
 				if v.Type == "boolean" {
 					inputs[k] = value == "true"

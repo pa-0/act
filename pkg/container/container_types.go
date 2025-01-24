@@ -35,7 +35,7 @@ type NewContainerInput struct {
 // FileEntry is a file to copy to a container
 type FileEntry struct {
 	Name string
-	Mode int64
+	Mode uint32
 	Body string
 }
 
@@ -54,6 +54,7 @@ type Container interface {
 	Remove() common.Executor
 	Close() common.Executor
 	ReplaceLogWriter(io.Writer, io.Writer) (io.Writer, io.Writer)
+	GetHealth(ctx context.Context) Health
 }
 
 // NewDockerBuildExecutorInput the input for the NewDockerBuildExecutor function
@@ -73,3 +74,11 @@ type NewDockerPullExecutorInput struct {
 	Username  string
 	Password  string
 }
+
+type Health int
+
+const (
+	HealthStarting Health = iota
+	HealthHealthy
+	HealthUnHealthy
+)

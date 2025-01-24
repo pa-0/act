@@ -3,6 +3,7 @@ package runner
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/docker/go-connections/nat"
 	"github.com/nektos/act/pkg/common"
@@ -49,6 +51,7 @@ type RunContext struct {
 	Masks               []string
 	cleanUpJobContainer common.Executor
 	caller              *caller // job calling this RunContext (reusable workflows)
+	nodeToolFullPath    string
 }
 
 func (rc *RunContext) AddMask(mask string) {
@@ -240,7 +243,6 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
 	}
 }
 
-//nolint:gocyclo
 func (rc *RunContext) startJobContainer() common.Executor {
 	return func(ctx context.Context) error {
 		logger := common.Logger(ctx)
@@ -341,7 +343,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		}
 
 		rc.cleanUpJobContainer = func(ctx context.Context) error {
-			reuseJobContainer := func(ctx context.Context) bool {
+			reuseJobContainer := func(_ context.Context) bool {
 				return rc.Config.ReuseContainers
 			}
 
@@ -420,6 +422,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 				Mode: 0o666,
 				Body: "",
 			}),
+			rc.waitForServiceContainers(),
 		)(ctx)
 	}
 }
@@ -430,8 +433,50 @@ func (rc *RunContext) execJobContainer(cmd []string, env map[string]string, user
 	}
 }
 
+func (rc *RunContext) InitializeNodeTool() common.Executor {
+	return func(ctx context.Context) error {
+		rc.GetNodeToolFullPath(ctx)
+		return nil
+	}
+}
+
+func (rc *RunContext) GetNodeToolFullPath(ctx context.Context) string {
+	if rc.nodeToolFullPath == "" {
+		timeed, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		path := rc.JobContainer.GetPathVariableName()
+		cenv := map[string]string{}
+		var cpath string
+		if err := rc.JobContainer.UpdateFromImageEnv(&cenv)(ctx); err == nil {
+			if p, ok := cenv[path]; ok {
+				cpath = p
+			}
+		}
+		if len(cpath) == 0 {
+			cpath = rc.JobContainer.DefaultPathVariable()
+		}
+		cenv[path] = cpath
+		hout := &bytes.Buffer{}
+		herr := &bytes.Buffer{}
+		stdout, stderr := rc.JobContainer.ReplaceLogWriter(hout, herr)
+		err := rc.execJobContainer([]string{"node", "--no-warnings", "-e", "console.log(process.execPath)"},
+			cenv, "", "").
+			Finally(func(context.Context) error {
+				rc.JobContainer.ReplaceLogWriter(stdout, stderr)
+				return nil
+			})(timeed)
+		rawStr := strings.Trim(hout.String(), "\r\n")
+		if err == nil && !strings.ContainsAny(rawStr, "\r\n") {
+			rc.nodeToolFullPath = rawStr
+		} else {
+			rc.nodeToolFullPath = "node"
+		}
+	}
+	return rc.nodeToolFullPath
+}
+
 func (rc *RunContext) ApplyExtraPath(ctx context.Context, env *map[string]string) {
-	if rc.ExtraPath != nil && len(rc.ExtraPath) > 0 {
+	if len(rc.ExtraPath) > 0 {
 		path := rc.JobContainer.GetPathVariableName()
 		if rc.JobContainer.IsEnvironmentCaseInsensitive() {
 			// On windows system Path and PATH could also be in the map
@@ -513,6 +558,40 @@ func (rc *RunContext) startServiceContainers(_ string) common.Executor {
 				c.Create(rc.Config.ContainerCapAdd, rc.Config.ContainerCapDrop),
 				c.Start(false),
 			))
+		}
+		return common.NewParallelExecutor(len(execs), execs...)(ctx)
+	}
+}
+
+func (rc *RunContext) waitForServiceContainer(c container.ExecutionsEnvironment) common.Executor {
+	return func(ctx context.Context) error {
+		sctx, cancel := context.WithTimeout(ctx, time.Minute*5)
+		defer cancel()
+		health := container.HealthStarting
+		delay := time.Second
+		for i := 0; ; i++ {
+			health = c.GetHealth(sctx)
+			if health != container.HealthStarting || i > 30 {
+				break
+			}
+			time.Sleep(delay)
+			delay *= 2
+			if delay > 10*time.Second {
+				delay = 10 * time.Second
+			}
+		}
+		if health == container.HealthHealthy {
+			return nil
+		}
+		return fmt.Errorf("service container failed to start")
+	}
+}
+
+func (rc *RunContext) waitForServiceContainers() common.Executor {
+	return func(ctx context.Context) error {
+		execs := []common.Executor{}
+		for _, c := range rc.ServiceContainers {
+			execs = append(execs, rc.waitForServiceContainer(c))
 		}
 		return common.NewParallelExecutor(len(execs), execs...)(ctx)
 	}
@@ -778,6 +857,7 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 	ghc := &model.GithubContext{
 		Event:            make(map[string]interface{}),
 		Workflow:         rc.Run.Workflow.Name,
+		RunAttempt:       rc.Config.Env["GITHUB_RUN_ATTEMPT"],
 		RunID:            rc.Config.Env["GITHUB_RUN_ID"],
 		RunNumber:        rc.Config.Env["GITHUB_RUN_NUMBER"],
 		Actor:            rc.Config.Actor,
@@ -804,6 +884,10 @@ func (rc *RunContext) getGithubContext(ctx context.Context) *model.GithubContext
 	if rc.JobContainer != nil {
 		ghc.EventPath = rc.JobContainer.GetActPath() + "/workflow/event.json"
 		ghc.Workspace = rc.JobContainer.ToContainerPath(rc.Config.Workdir)
+	}
+
+	if ghc.RunAttempt == "" {
+		ghc.RunAttempt = "1"
 	}
 
 	if ghc.RunID == "" {
@@ -909,14 +993,15 @@ func nestedMapLookup(m map[string]interface{}, ks ...string) (rval interface{}) 
 		return rval
 	} else if m, ok = rval.(map[string]interface{}); !ok {
 		return nil
-	} else { // 1+ more keys
-		return nestedMapLookup(m, ks[1:]...)
 	}
+	// 1+ more keys
+	return nestedMapLookup(m, ks[1:]...)
 }
 
 func (rc *RunContext) withGithubEnv(ctx context.Context, github *model.GithubContext, env map[string]string) map[string]string {
 	env["CI"] = "true"
 	env["GITHUB_WORKFLOW"] = github.Workflow
+	env["GITHUB_RUN_ATTEMPT"] = github.RunAttempt
 	env["GITHUB_RUN_ID"] = github.RunID
 	env["GITHUB_RUN_NUMBER"] = github.RunNumber
 	env["GITHUB_ACTION"] = github.Action
