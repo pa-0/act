@@ -13,6 +13,7 @@ type GithubContext struct {
 	Event            map[string]interface{} `json:"event"`
 	EventPath        string                 `json:"event_path"`
 	Workflow         string                 `json:"workflow"`
+	RunAttempt       string                 `json:"run_attempt"`
 	RunID            string                 `json:"run_id"`
 	RunNumber        string                 `json:"run_number"`
 	Actor            string                 `json:"actor"`
@@ -62,9 +63,9 @@ func nestedMapLookup(m map[string]interface{}, ks ...string) (rval interface{}) 
 		return rval
 	} else if m, ok = rval.(map[string]interface{}); !ok {
 		return nil
-	} else { // 1+ more keys
-		return nestedMapLookup(m, ks[1:]...)
 	}
+	// 1+ more keys
+	return nestedMapLookup(m, ks[1:]...)
 }
 
 func withDefaultBranch(ctx context.Context, b string, event map[string]interface{}) map[string]interface{} {

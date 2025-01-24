@@ -155,7 +155,6 @@ func TestRunContext_EvalBool(t *testing.T) {
 
 	updateTestIfWorkflow(t, tables, rc)
 	for _, table := range tables {
-		table := table
 		t.Run(table.in, func(t *testing.T) {
 			assertObject := assert.New(t)
 			b, err := EvalBool(context.Background(), rc.ExprEval, table.in, exprparser.DefaultStatusCheckSuccess)
@@ -259,11 +258,7 @@ func TestRunContext_GetBindsAndMounts(t *testing.T) {
 	isWindows := runtime.GOOS == "windows"
 
 	for _, testcase := range tests {
-		// pin for scopelint
-		testcase := testcase
 		for _, bindWorkDir := range []bool{true, false} {
-			// pin for scopelint
-			bindWorkDir := bindWorkDir
 			testBindSuffix := ""
 			if bindWorkDir {
 				testBindSuffix = "Bind"
@@ -387,15 +382,15 @@ func TestGetGitHubContext(t *testing.T) {
 		owner = o
 	}
 
-	assert.Equal(t, ghc.RunID, "1")
-	assert.Equal(t, ghc.RunNumber, "1")
-	assert.Equal(t, ghc.RetentionDays, "0")
-	assert.Equal(t, ghc.Actor, actor)
-	assert.Equal(t, ghc.Repository, repo)
-	assert.Equal(t, ghc.RepositoryOwner, owner)
-	assert.Equal(t, ghc.RunnerPerflog, "/dev/null")
-	assert.Equal(t, ghc.Token, rc.Config.Secrets["GITHUB_TOKEN"])
-	assert.Equal(t, ghc.Job, "job1")
+	assert.Equal(t, "1", ghc.RunID)
+	assert.Equal(t, "1", ghc.RunNumber)
+	assert.Equal(t, "0", ghc.RetentionDays)
+	assert.Equal(t, actor, ghc.Actor)
+	assert.Equal(t, repo, ghc.Repository)
+	assert.Equal(t, owner, ghc.RepositoryOwner)
+	assert.Equal(t, "/dev/null", ghc.RunnerPerflog)
+	assert.Equal(t, rc.Config.Secrets["GITHUB_TOKEN"], ghc.Token)
+	assert.Equal(t, "job1", ghc.Job)
 }
 
 func TestGetGithubContextRef(t *testing.T) {
@@ -418,7 +413,6 @@ func TestGetGithubContextRef(t *testing.T) {
 	}
 
 	for _, data := range table {
-		data := data
 		t.Run(data.event, func(t *testing.T) {
 			rc := &RunContext{
 				EventJSON: data.json,

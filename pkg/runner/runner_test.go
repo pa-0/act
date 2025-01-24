@@ -196,16 +196,18 @@ func (j *TestJobFileInfo) runTest(ctx context.Context, t *testing.T, cfg *Config
 	assert.Nil(t, err, j.workflowPath)
 
 	planner, err := model.NewWorkflowPlanner(fullWorkflowPath, true)
-	assert.Nil(t, err, fullWorkflowPath)
-
-	plan, err := planner.PlanEvent(j.eventName)
-	assert.True(t, (err == nil) != (plan == nil), "PlanEvent should return either a plan or an error")
-	if err == nil && plan != nil {
-		err = runner.NewPlanExecutor(plan)(ctx)
-		if j.errorMessage == "" {
-			assert.Nil(t, err, fullWorkflowPath)
-		} else {
-			assert.Error(t, err, j.errorMessage)
+	if j.errorMessage != "" && err != nil {
+		assert.Error(t, err, j.errorMessage)
+	} else if assert.Nil(t, err, fullWorkflowPath) {
+		plan, err := planner.PlanEvent(j.eventName)
+		assert.True(t, (err == nil) != (plan == nil), "PlanEvent should return either a plan or an error")
+		if err == nil && plan != nil {
+			err = runner.NewPlanExecutor(plan)(ctx)
+			if j.errorMessage == "" {
+				assert.Nil(t, err, fullWorkflowPath)
+			} else {
+				assert.Error(t, err, j.errorMessage)
+			}
 		}
 	}
 
@@ -303,6 +305,7 @@ func TestRunEvent(t *testing.T) {
 		{workdir, "workflow_dispatch_no_inputs_mapping", "workflow_dispatch", "", platforms, secrets},
 		{workdir, "workflow_dispatch-scalar", "workflow_dispatch", "", platforms, secrets},
 		{workdir, "workflow_dispatch-scalar-composite-action", "workflow_dispatch", "", platforms, secrets},
+		{workdir, "uses-workflow-defaults", "workflow_dispatch", "", platforms, secrets},
 		{workdir, "job-needs-context-contains-result", "push", "", platforms, secrets},
 		{"../model/testdata", "strategy", "push", "", platforms, secrets}, // TODO: move all testdata into pkg so we can validate it with planner and runner
 		{"../model/testdata", "container-volumes", "push", "", platforms, secrets},
@@ -317,6 +320,7 @@ func TestRunEvent(t *testing.T) {
 		{workdir, "services-empty-image", "push", "", platforms, secrets},
 		{workdir, "services-host-network", "push", "", platforms, secrets},
 		{workdir, "services-with-container", "push", "", platforms, secrets},
+		{workdir, "mysql-service-container-with-health-check", "push", "", platforms, secrets},
 
 		// local remote action overrides
 		{workdir, "local-remote-action-overrides", "push", "", platforms, secrets},
@@ -333,7 +337,7 @@ func TestRunEvent(t *testing.T) {
 				config.EventPath = eventFile
 			}
 
-			testConfigFile := filepath.Join(workdir, table.workflowPath, "config.yml")
+			testConfigFile := filepath.Join(workdir, table.workflowPath, "config/config.yml")
 			if file, err := os.ReadFile(testConfigFile); err == nil {
 				testConfig := &TestConfig{}
 				if yaml.Unmarshal(file, testConfig) == nil {
@@ -531,7 +535,7 @@ func (f *maskJobLoggerFactory) WithJobLogger() *log.Logger {
 }
 
 func TestMaskValues(t *testing.T) {
-	assertNoSecret := func(text string, secret string) {
+	assertNoSecret := func(text string, _ string) {
 		index := strings.Index(text, "composite secret")
 		if index > -1 {
 			fmt.Printf("\nFound Secret in the given text:\n%s\n", text)
